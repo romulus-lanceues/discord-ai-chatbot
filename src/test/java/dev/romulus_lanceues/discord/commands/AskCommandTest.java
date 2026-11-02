@@ -1,10 +1,16 @@
 package dev.romulus_lanceues.discord.commands;
 
+import dev.romulus_lanceues.ai.ChatService;
+import dev.romulus_lanceues.util.RateLimiter;
+import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
+import net.dv8tion.jda.api.requests.restaction.WebhookMessageCreateAction;
+import net.dv8tion.jda.api.requests.restaction.WebhookMessageEditAction;
 import net.dv8tion.jda.api.requests.restaction.interactions.ReplyCallbackAction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -13,26 +19,62 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
+import java.time.Duration;
+import java.util.Collections;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 class AskCommandTest {
 
+    private ChatService chatService;
+    private RateLimiter rateLimiter;
     private AskCommand command;
     private SlashCommandInteractionEvent event;
     private ReplyCallbackAction replyAction;
+    private ReplyCallbackAction deferAction;
+    private InteractionHook hook;
+    private WebhookMessageEditAction editAction;
+    private WebhookMessageCreateAction createAction;
+    private User user;
 
     @BeforeEach
+    @SuppressWarnings("unchecked")
     void setUp() {
-        command = new AskCommand();
+        chatService = mock(ChatService.class);
+        rateLimiter = mock(RateLimiter.class);
+        command = new AskCommand(chatService, rateLimiter);
+
         event = mock(SlashCommandInteractionEvent.class);
         replyAction = mock(ReplyCallbackAction.class);
+        deferAction = mock(ReplyCallbackAction.class);
+        hook = mock(InteractionHook.class);
+        editAction = mock(WebhookMessageEditAction.class);
+        createAction = mock(WebhookMessageCreateAction.class);
+        user = mock(User.class);
+
+        when(event.getUser()).thenReturn(user);
+        when(user.getIdLong()).thenReturn(12345L);
+
         when(event.reply(anyString())).thenReturn(replyAction);
         when(replyAction.setEphemeral(anyBoolean())).thenReturn(replyAction);
+
+        when(event.deferReply()).thenReturn(deferAction);
+
+        when(event.getHook()).thenReturn(hook);
+        when(hook.editOriginal(anyString())).thenReturn(editAction);
+        when(editAction.setAllowedMentions(any())).thenReturn(editAction);
+
+        when(hook.sendMessage(anyString())).thenReturn(createAction);
+        when(createAction.setAllowedMentions(any())).thenReturn(createAction);
+
+        when(rateLimiter.checkCooldown(anyLong())).thenReturn(Optional.empty());
     }
 
     @Test
@@ -52,42 +94,6 @@ class AskCommandTest {
         assertTrue(promptOption.isRequired());
     }
 
-    @Test
-    @DisplayName("Replies with placeholder echoing valid prompt and does not set ephemeral")
-    void repliesWithPlaceholderEchoingPrompt() {
-        OptionMapping promptOption = mock(OptionMapping.class);
-        when(promptOption.getAsString()).thenReturn("What is Java?");
-        when(event.getOption("prompt")).thenReturn(promptOption);
-
-        command.handle(event);
-
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(event).reply(captor.capture());
-        verify(replyAction).queue();
-        verify(replyAction, never()).setEphemeral(anyBoolean());
-
-        String message = captor.getValue();
-        assertTrue(message.contains("What is Java?"));
-        assertTrue(message.contains("Gemini AI generation will be connected here"));
-    }
-
-    @Test
-    @DisplayName("Strips surrounding whitespace from prompt before echoing")
-    void stripsSurroundingWhitespaceFromPrompt() {
-        OptionMapping promptOption = mock(OptionMapping.class);
-        when(promptOption.getAsString()).thenReturn("   Tell me a fun fact   ");
-        when(event.getOption("prompt")).thenReturn(promptOption);
-
-        command.handle(event);
-
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(event).reply(captor.capture());
-
-        String message = captor.getValue();
-        assertTrue(message.contains("\"Tell me a fun fact\""));
-        assertFalse(message.contains("\"   Tell me a fun fact   \""));
-    }
-
     @ParameterizedTest(name = "Rejects invalid whitespace prompt: {0}")
     @ValueSource(strings = {
             "",
@@ -95,10 +101,10 @@ class AskCommandTest {
             "\t",
             "\n",
             "\r\n\t  \n",
-            "\u2000\u2003\u3000" // Unicode whitespace (en quad, em space, ideographic space)
+            "\u2000\u2003\u3000"
     })
-    @DisplayName("Rejects blank prompts consisting only of spaces, tabs, or newlines with ephemeral warning")
-    void rejectsBlankPromptWithEphemeralError(String invalidPrompt) {
+    @DisplayName("Rejects blank prompts with ephemeral warning")
+    void rejectsBlankPromptWithEphemeralWarning(String invalidPrompt) {
         OptionMapping promptOption = mock(OptionMapping.class);
         when(promptOption.getAsString()).thenReturn(invalidPrompt);
         when(event.getOption("prompt")).thenReturn(promptOption);
@@ -108,11 +114,13 @@ class AskCommandTest {
         verify(event).reply("⚠️ Please provide a non-empty prompt.");
         verify(replyAction).setEphemeral(true);
         verify(replyAction).queue();
+        verify(event, never()).deferReply();
+        verifyNoInteractions(chatService);
     }
 
     @Test
-    @DisplayName("Rejects null prompt option with ephemeral error")
-    void rejectsNullPromptWithEphemeralError() {
+    @DisplayName("Rejects null prompt option with ephemeral warning")
+    void rejectsNullPromptWithEphemeralWarning() {
         when(event.getOption("prompt")).thenReturn(null);
 
         command.handle(event);
@@ -120,61 +128,119 @@ class AskCommandTest {
         verify(event).reply("⚠️ Please provide a non-empty prompt.");
         verify(replyAction).setEphemeral(true);
         verify(replyAction).queue();
+        verify(event, never()).deferReply();
+        verifyNoInteractions(chatService);
     }
 
     @Test
-    @DisplayName("Echoes special Unicode characters, emojis, and markdown correctly")
-    void echoesSpecialUnicodeCharactersAndMarkdown() {
-        String unicodePrompt = "🤖 AI & Cloud ☁️: 日本語 (Japanese) مرحبا (Arabic) **bold** `code`";
+    @DisplayName("Replies ephemerally when user is in cooldown")
+    void blocksUserInCooldown() {
         OptionMapping promptOption = mock(OptionMapping.class);
-        when(promptOption.getAsString()).thenReturn(unicodePrompt);
+        when(promptOption.getAsString()).thenReturn("Valid question");
         when(event.getOption("prompt")).thenReturn(promptOption);
+
+        when(rateLimiter.checkCooldown(12345L)).thenReturn(Optional.of(Duration.ofSeconds(4)));
 
         command.handle(event);
 
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(event).reply(captor.capture());
+        verify(event).reply("⏳ Please wait 4 seconds before asking another question.");
+        verify(replyAction).setEphemeral(true);
         verify(replyAction).queue();
-
-        String message = captor.getValue();
-        assertTrue(message.contains(unicodePrompt));
+        verify(event, never()).deferReply();
+        verifyNoInteractions(chatService);
     }
 
     @Test
-    @DisplayName("Safely truncates prompt at max length so Discord message does not exceed 2000 chars")
-    void truncatesExcessivelyLongPromptToStayWithinDiscordLimit() {
-        String longPrompt = "A".repeat(2500);
+    @DisplayName("Defers reply and edits original with answer under 2000 characters")
+    void defersAndEditsOriginalOnSingleChunk() {
         OptionMapping promptOption = mock(OptionMapping.class);
-        when(promptOption.getAsString()).thenReturn(longPrompt);
+        when(promptOption.getAsString()).thenReturn("What is Java?");
         when(event.getOption("prompt")).thenReturn(promptOption);
+
+        when(chatService.ask("What is Java?"))
+                .thenReturn(CompletableFuture.completedFuture("Java is an object-oriented programming language."));
 
         command.handle(event);
 
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(event).reply(captor.capture());
-        verify(replyAction).queue();
-
-        String message = captor.getValue();
-        assertTrue(message.length() <= 2000, "Message length must not exceed Discord's 2000 char limit: " + message.length());
-        assertTrue(message.contains("..."));
+        verify(event.deferReply()).queue();
+        verify(chatService).ask("What is Java?");
+        verify(hook).editOriginal("Java is an object-oriented programming language.");
+        verify(editAction).setAllowedMentions(Collections.emptyList());
+        verify(editAction).queue();
+        verify(hook, never()).sendMessage(anyString());
     }
 
     @Test
-    @DisplayName("Handles maximum Discord slash command option length (6000 chars) safely")
-    void handlesMaxDiscordOptionLengthSafely() {
-        String maxOptionPrompt = "X".repeat(6000);
+    @DisplayName("Splits long response into multiple chunks and sends subsequent messages")
+    void splitsAndSendsSubsequentMessagesForLongResponse() {
         OptionMapping promptOption = mock(OptionMapping.class);
-        when(promptOption.getAsString()).thenReturn(maxOptionPrompt);
+        when(promptOption.getAsString()).thenReturn("Explain quantum mechanics");
         when(event.getOption("prompt")).thenReturn(promptOption);
+
+        String chunk1 = "A".repeat(1500);
+        String chunk2 = "B".repeat(1000);
+        String fullResponse = chunk1 + "\n\n" + chunk2;
+
+        when(chatService.ask(anyString()))
+                .thenReturn(CompletableFuture.completedFuture(fullResponse));
 
         command.handle(event);
 
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(event).reply(captor.capture());
-        verify(replyAction).queue();
+        verify(event.deferReply()).queue();
+        ArgumentCaptor<String> editCaptor = ArgumentCaptor.forClass(String.class);
+        verify(hook).editOriginal(editCaptor.capture());
+        verify(editAction).setAllowedMentions(Collections.emptyList());
+        verify(editAction).queue();
 
-        String message = captor.getValue();
-        assertTrue(message.length() <= 2000, "Reply must stay within 2000 characters: " + message.length());
-        assertTrue(message.contains("..."));
+        ArgumentCaptor<String> sendCaptor = ArgumentCaptor.forClass(String.class);
+        verify(hook).sendMessage(sendCaptor.capture());
+        verify(createAction).setAllowedMentions(Collections.emptyList());
+        verify(createAction).queue();
+
+        assertEquals(chunk1, editCaptor.getValue());
+        assertEquals(chunk2, sendCaptor.getValue());
+    }
+
+    @Test
+    @DisplayName("Edits original with friendly error when chatService future fails")
+    void handlesChatServiceFailureGracefully() {
+        OptionMapping promptOption = mock(OptionMapping.class);
+        when(promptOption.getAsString()).thenReturn("Fail question");
+        when(event.getOption("prompt")).thenReturn(promptOption);
+
+        when(chatService.ask(anyString()))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Crash")));
+
+        command.handle(event);
+
+        verify(event.deferReply()).queue();
+        verify(hook).editOriginal("I encountered an unexpected issue while generating a response. Please try again later.");
+        verify(editAction).setAllowedMentions(Collections.emptyList());
+        verify(editAction).queue();
+    }
+
+    @Test
+    @DisplayName("Edits original with friendly error when chatService returns empty string")
+    void handlesChatServiceEmptyResponseGracefully() {
+        OptionMapping promptOption = mock(OptionMapping.class);
+        when(promptOption.getAsString()).thenReturn("Empty response question");
+        when(event.getOption("prompt")).thenReturn(promptOption);
+
+        when(chatService.ask(anyString()))
+                .thenReturn(CompletableFuture.completedFuture(""));
+
+        command.handle(event);
+
+        verify(event.deferReply()).queue();
+        verify(hook).editOriginal("I encountered an unexpected issue while generating a response. Please try again later.");
+        verify(editAction).setAllowedMentions(Collections.emptyList());
+        verify(editAction).queue();
+    }
+
+    @Test
+    @DisplayName("Validates constructor parameters for null checks")
+    void validatesConstructorParameters() {
+        org.junit.jupiter.api.Assertions.assertThrows(NullPointerException.class, () -> new AskCommand(null, rateLimiter));
+        org.junit.jupiter.api.Assertions.assertThrows(NullPointerException.class, () -> new AskCommand(chatService, null));
     }
 }

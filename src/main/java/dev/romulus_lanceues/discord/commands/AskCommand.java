@@ -1,20 +1,38 @@
 package dev.romulus_lanceues.discord.commands;
 
+import dev.romulus_lanceues.ai.ChatService;
 import dev.romulus_lanceues.discord.SlashCommandHandler;
+import dev.romulus_lanceues.util.MessageSplitter;
+import dev.romulus_lanceues.util.RateLimiter;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.time.Duration;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 
 public class AskCommand implements SlashCommandHandler {
+
+    private static final Logger LOG = LoggerFactory.getLogger(AskCommand.class);
 
     private static final String NAME = "ask";
     private static final String DESCRIPTION = "Ask Cloud a question or prompt.";
     private static final String OPTION_PROMPT = "prompt";
 
-    // Discord message limit is 2000 characters. I truncate the preview to keep the total message well within bounds.
-    static final int MAX_PROMPT_PREVIEW_LENGTH = 1800;
+    private final ChatService chatService;
+    private final RateLimiter rateLimiter;
+
+    public AskCommand(ChatService chatService, RateLimiter rateLimiter) {
+        this.chatService = Objects.requireNonNull(chatService, "chatService must not be null");
+        this.rateLimiter = Objects.requireNonNull(rateLimiter, "rateLimiter must not be null");
+    }
 
     @Override
     public String name() {
@@ -37,10 +55,49 @@ public class AskCommand implements SlashCommandHandler {
             return;
         }
 
+        long userId = event.getUser().getIdLong();
+        Optional<Duration> cooldown = rateLimiter.checkCooldown(userId);
+        if (cooldown.isPresent()) {
+            long remainingSeconds = Math.max(1, (long) Math.ceil(cooldown.get().toMillis() / 1000.0));
+            event.reply(String.format("⏳ Please wait %d seconds before asking another question.", remainingSeconds))
+                    .setEphemeral(true)
+                    .queue();
+            return;
+        }
+
+        event.deferReply().queue();
+
         String prompt = promptOption.getAsString().strip();
-        String displayPrompt = prompt.length() > MAX_PROMPT_PREVIEW_LENGTH
-                ? prompt.substring(0, MAX_PROMPT_PREVIEW_LENGTH) + "..."
-                : prompt;
-        event.reply("**Prompt received**: \"" + displayPrompt + "\"").queue();
+        chatService.ask(prompt).whenComplete((result, throwable) -> {
+            if (throwable != null) {
+                LOG.error("Failed to process /ask request for user {}", userId, throwable);
+                event.getHook()
+                        .editOriginal("I encountered an unexpected issue while generating a response. Please try again later.")
+                        .setAllowedMentions(Collections.emptyList())
+                        .queue();
+                return;
+            }
+
+            List<String> chunks = MessageSplitter.split(result, 2000);
+            if (chunks.isEmpty()) {
+                event.getHook()
+                        .editOriginal("I encountered an unexpected issue while generating a response. Please try again later.")
+                        .setAllowedMentions(Collections.emptyList())
+                        .queue();
+                return;
+            }
+
+            event.getHook()
+                    .editOriginal(chunks.get(0))
+                    .setAllowedMentions(Collections.emptyList())
+                    .queue();
+
+            for (int i = 1; i < chunks.size(); i++) {
+                event.getHook()
+                        .sendMessage(chunks.get(i))
+                        .setAllowedMentions(Collections.emptyList())
+                        .queue();
+            }
+        });
     }
 }

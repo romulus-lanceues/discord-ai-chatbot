@@ -1,14 +1,19 @@
 package dev.romulus_lanceues.discord;
 
+import dev.romulus_lanceues.ai.ChatService;
 import dev.romulus_lanceues.discord.commands.AskCommand;
 import dev.romulus_lanceues.discord.commands.CloudCommand;
 import dev.romulus_lanceues.discord.commands.ConversationCommand;
+import dev.romulus_lanceues.util.RateLimiter;
+import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
+import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.interactions.commands.Command;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 import net.dv8tion.jda.api.interactions.commands.build.SubcommandData;
+import net.dv8tion.jda.api.requests.restaction.WebhookMessageEditAction;
 import net.dv8tion.jda.api.requests.restaction.interactions.ReplyCallbackAction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -17,11 +22,15 @@ import org.mockito.ArgumentCaptor;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
@@ -30,6 +39,8 @@ class CommandRegistrationIntegrationTest {
     // Discord slash command name format: 1-32 lowercase characters, numbers, underscores, hyphens
     private static final Pattern DISCORD_NAME_PATTERN = Pattern.compile("^[a-z0-9_-]{1,32}$");
 
+    private ChatService chatService;
+    private RateLimiter rateLimiter;
     private List<SlashCommandHandler> standardHandlers;
     private SlashCommandListener listener;
     private SlashCommandInteractionEvent event;
@@ -37,9 +48,11 @@ class CommandRegistrationIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        chatService = mock(ChatService.class);
+        rateLimiter = mock(RateLimiter.class);
         standardHandlers = List.of(
                 new CloudCommand(),
-                new AskCommand(),
+                new AskCommand(chatService, rateLimiter),
                 new ConversationCommand()
         );
         listener = new SlashCommandListener(standardHandlers);
@@ -114,7 +127,7 @@ class CommandRegistrationIntegrationTest {
 
         listener.onSlashCommandInteraction(event);
 
-        verify(event).reply("**Cloud Bot**: Hello! I am Cloud, your discord bot companion.");
+        verify(event).reply("Hello there! The name is Cloud. If you want to know more about me, kindly pick certain topics on the topic tab.");
         verify(replyAction).queue();
     }
 
@@ -126,12 +139,28 @@ class CommandRegistrationIntegrationTest {
         when(promptOption.getAsString()).thenReturn("What is Cloud?");
         when(event.getOption("prompt")).thenReturn(promptOption);
 
+        User user = mock(User.class);
+        when(event.getUser()).thenReturn(user);
+        when(user.getIdLong()).thenReturn(12345L);
+        when(rateLimiter.checkCooldown(12345L)).thenReturn(Optional.empty());
+
+        ReplyCallbackAction deferAction = mock(ReplyCallbackAction.class);
+        when(event.deferReply()).thenReturn(deferAction);
+
+        InteractionHook hook = mock(InteractionHook.class);
+        when(event.getHook()).thenReturn(hook);
+        WebhookMessageEditAction editAction = mock(WebhookMessageEditAction.class);
+        when(hook.editOriginal(anyString())).thenReturn(editAction);
+        when(editAction.setAllowedMentions(any())).thenReturn(editAction);
+
+        when(chatService.ask("What is Cloud?"))
+                .thenReturn(CompletableFuture.completedFuture("Cloud is an AI assistant."));
+
         listener.onSlashCommandInteraction(event);
 
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(event).reply(captor.capture());
-        verify(replyAction).queue();
-        assertTrue(captor.getValue().contains("What is Cloud?"));
+        verify(event.deferReply()).queue();
+        verify(chatService).ask("What is Cloud?");
+        verify(hook).editOriginal("Cloud is an AI assistant.");
     }
 
     @Test
@@ -160,5 +189,41 @@ class CommandRegistrationIntegrationTest {
         verify(event).reply("Unknown or unsupported command: /nonexistent");
         verify(replyAction).setEphemeral(true);
         verify(replyAction).queue();
+    }
+
+    @Test
+    @DisplayName("Routes /cloud command with topic option through listener successfully")
+    void routesCloudCommandWithTopicOptionThroughListener() {
+        when(event.getName()).thenReturn("cloud");
+        OptionMapping topicOption = mock(OptionMapping.class);
+        when(topicOption.getAsString()).thenReturn("about");
+        when(event.getOption("topic")).thenReturn(topicOption);
+
+        listener.onSlashCommandInteraction(event);
+
+        verify(event).reply("Hi! I'm cloud a discord AI chatbot powered by Gemini");
+        verify(replyAction).queue();
+    }
+
+    @Test
+    @DisplayName("Routes /ask command when user is on cooldown through listener successfully")
+    void routesAskCommandInCooldownThroughListener() {
+        when(event.getName()).thenReturn("ask");
+        OptionMapping promptOption = mock(OptionMapping.class);
+        when(promptOption.getAsString()).thenReturn("Can I ask now?");
+        when(event.getOption("prompt")).thenReturn(promptOption);
+
+        User user = mock(User.class);
+        when(event.getUser()).thenReturn(user);
+        when(user.getIdLong()).thenReturn(54321L);
+        when(rateLimiter.checkCooldown(54321L)).thenReturn(Optional.of(java.time.Duration.ofSeconds(3)));
+
+        listener.onSlashCommandInteraction(event);
+
+        verify(event).reply("⏳ Please wait 3 seconds before asking another question.");
+        verify(replyAction).setEphemeral(true);
+        verify(replyAction).queue();
+        verify(event, never()).deferReply();
+        verifyNoInteractions(chatService);
     }
 }
