@@ -72,7 +72,7 @@ class CloudCommandTest {
 
         command.handle(event);
 
-        verify(event).reply("☁️ **Cloud Bot**: Hello! I am Cloud, your AI companion. (Slash commands initialized - placeholder response)");
+        verify(event).reply("Hello there! The name is Cloud. If you want to know more about me, kindly pick certain topics on the topic tab.");
         verify(replyAction).queue();
         verify(replyAction, never()).setEphemeral(anyBoolean());
     }
@@ -87,7 +87,7 @@ class CloudCommandTest {
 
         command.handle(event);
 
-        verify(event).reply("☁️ **Cloud Bot**: Hello! I am Cloud, your AI companion. (Slash commands initialized - placeholder response)");
+        verify(event).reply("Hello there! The name is Cloud. If you want to know more about me, kindly pick certain topics on the topic tab.");
         verify(replyAction).queue();
     }
 
@@ -105,8 +105,7 @@ class CloudCommandTest {
         verify(replyAction).queue();
 
         String message = captor.getValue();
-        assertTrue(message.contains("[Topic: help]"));
-        assertTrue(message.contains("Information placeholder for 'help'."));
+        assertEquals("To interact with you can use two commands! \"ask\": If you want a quick answer. \"/conversation\": If you want to talk", message);
     }
 
     @Test
@@ -122,8 +121,7 @@ class CloudCommandTest {
         verify(event).reply(captor.capture());
 
         String message = captor.getValue();
-        assertTrue(message.contains("[Topic: about]"));
-        assertTrue(message.contains("Information placeholder for 'about'."));
+        assertEquals("Hi! I'm cloud a discord AI chatbot powered by Gemini", message);
     }
 
     @Test
@@ -139,8 +137,7 @@ class CloudCommandTest {
         verify(event).reply(captor.capture());
 
         String message = captor.getValue();
-        assertTrue(message.contains("[Topic: status]"));
-        assertTrue(message.contains("Information placeholder for 'status'."));
+        assertEquals("Right now I'm still currently under thorough development. Expect some bugs and feel free to provide suggestions on how I can be improved! :)", message);
     }
 
     @Test
@@ -156,8 +153,7 @@ class CloudCommandTest {
         verify(event).reply(captor.capture());
 
         String message = captor.getValue();
-        assertTrue(message.contains("[Topic: architecture]"));
-        assertTrue(message.contains("Information placeholder for 'architecture'."));
+        assertEquals("Unknown command", message);
     }
 
     @Test
@@ -173,8 +169,7 @@ class CloudCommandTest {
         verify(event).reply(captor.capture());
 
         String message = captor.getValue();
-        assertTrue(message.contains("[Topic: help]"));
-        assertFalse(message.contains("[Topic:    help   ]"));
+        assertEquals("To interact with you can use two commands! \"ask\": If you want a quick answer. \"/conversation\": If you want to talk", message);
     }
 
     @Test
@@ -193,6 +188,6 @@ class CloudCommandTest {
 
         String message = captor.getValue();
         assertTrue(message.length() <= 2000, "Message length must stay within 2000 characters: " + message.length());
-        assertTrue(message.contains("..."));
+        assertEquals("Unknown command", message);
     }
 }
