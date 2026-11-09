@@ -3,7 +3,7 @@ package dev.romulus_lanceues.config;
 import java.util.Objects;
 import java.util.function.Function;
 
-public record Config(String botToken) {
+public record Config(String botToken, GeminiConfig geminiConfig) {
 
     public static Config from(Function<String, String> lookup) {
         Objects.requireNonNull(lookup, "lookup must not be null");
@@ -11,7 +11,8 @@ public record Config(String botToken) {
         if (token == null || token.isBlank()) {
             throw new IllegalStateException("Missing required environment variable: 'BOT_TOKEN'. Set it in your environment or .env file.");
         }
-        return new Config(token.strip());
+        GeminiConfig gemini = GeminiConfig.from(lookup);
+        return new Config(token.strip(), gemini);
     }
 
     public static Config fromEnv() {
@@ -20,6 +21,6 @@ public record Config(String botToken) {
 
     @Override
     public String toString() {
-        return "Config[botToken=***]";
+        return "Config[botToken=***, geminiConfig=" + geminiConfig + "]";
     }
 }
