@@ -111,7 +111,7 @@ class AskCommandTest {
 
         command.handle(event);
 
-        verify(event).reply("⚠️ Please provide a non-empty prompt.");
+        verify(event).reply("Please provide a non-empty prompt.");
         verify(replyAction).setEphemeral(true);
         verify(replyAction).queue();
         verify(event, never()).deferReply();
@@ -125,7 +125,7 @@ class AskCommandTest {
 
         command.handle(event);
 
-        verify(event).reply("⚠️ Please provide a non-empty prompt.");
+        verify(event).reply("Please provide a non-empty prompt.");
         verify(replyAction).setEphemeral(true);
         verify(replyAction).queue();
         verify(event, never()).deferReply();
