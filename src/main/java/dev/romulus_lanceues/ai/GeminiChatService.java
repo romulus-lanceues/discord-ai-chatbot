@@ -40,7 +40,7 @@ public class GeminiChatService implements ChatService {
     }
 
     public GeminiChatService(Client client, GeminiConfig config) {
-        this(client, config, Duration.ofSeconds(30));
+        this(client, config, Duration.ofSeconds(60));
     }
 
     @Override
