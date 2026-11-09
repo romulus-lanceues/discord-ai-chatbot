@@ -13,7 +13,7 @@ public record GeminiConfig(
         String systemInstruction
 ) {
 
-    public static final String DEFAULT_MODEL = "gemini-2.5-flash";
+    public static final String DEFAULT_MODEL = "gemini-3.5-flash";
     public static final float DEFAULT_TEMPERATURE = 0.7f;
     public static final float DEFAULT_TOP_P = 0.95f;
     public static final float DEFAULT_TOP_K = 40.0f;
